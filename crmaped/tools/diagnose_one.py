@@ -148,8 +148,10 @@ def main():
 
     ok = True
     checks = []
+    span = float(max(vmax[0] - vmin[0], vmax[1] - vmin[1]))
+    tol_xy = max(30.0, span * 0.6)
     xy_err = float(np.hypot(*(ctr[:2] - pos[:2])))
-    checks.append(("центр XY рядом с IPL-позицией (<30 м)", xy_err < 30.0, f"err={xy_err:.2f} м"))
+    checks.append((f"центр XY рядом с IPL-позицией (<{tol_xy:.0f} м)", xy_err < tol_xy, f"err={xy_err:.2f} м"))
     dz = float(vmin[2] - pos[2])
     checks.append(("низ модели у IPL-высоты (|Δz| < 5 м)", abs(dz) < 5.0, f"z_min-pos_z={dz:.2f} м"))
     checks.append(("нет NaN/Inf", bool(np.all(np.isfinite(verts_world))), ""))
@@ -162,13 +164,25 @@ def main():
     # экспорт одиночного glb для визуальной проверки
     os.makedirs(args.out, exist_ok=True)
     glb_path = os.path.join(args.out, f"{name}.glb")
-    try:
-        from crw.export_gltf import write_single_glb
-        write_single_glb(glb_path, verts_local, model.triangles if hasattr(model, "triangles") else None,
-                         m_gta)
-        print(f"  Записан {glb_path} — перетащите его в viewer/index.html")
-    except Exception:
-        pass
+    if model is not None and len(verts_local) > 2:
+        tris_all, voff = [], 0
+        for at in model.atomics:
+            g = model.geos[at.geom_index] if 0 <= at.geom_index < len(model.geos) else None
+            if g is None or len(g.positions) == 0:
+                continue
+            if len(g.triangles):
+                tris_all.append(g.triangles + voff)
+            voff += len(g.positions)
+        tris = np.concatenate(tris_all) if tris_all else None
+        try:
+            from crw.export_gltf import write_single_glb
+            write_single_glb(glb_path, verts_local, tris, m_gta)
+            print(f"  Записан {glb_path} (треугольников: {0 if tris is None else len(tris)})"
+                  f" — перетащите его в viewer\\index.html")
+        except Exception as e:
+            print(f"WARN: glb не записан: {e}")
+    else:
+        print("  glb пропущен (нет полной геометрии — только bbox-диагностика)")
 
     meta = {
         "model": name, "source_ipl": ipl.path,

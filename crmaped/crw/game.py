@@ -1,8 +1,8 @@
 """Игровая база: обход gta.dat, чтение IMG/IDE/IPL (в т.ч. из IMG), резолв моделей.
 
 gta.dat содержит строки:
-    model <path>.ide | <path>.ipl        (относительно папки data\)
-    image  models\<x>.img
+    model <path>.ide | <path>.ipl        (относительно папки data/)
+    image  models/x.img
 gta3.img и gta_int.img в gta.dat НЕ перечислены — добавляем их принудительно.
 """
 from __future__ import annotations
@@ -25,6 +25,13 @@ class GameBase:
     ipl_paths_disk: list[str] = field(default_factory=list)
     ipl_in_img: list[tuple[str, str]] = field(default_factory=list)  # (archive, entry)
 
+    @staticmethod
+    def _fix_slashes(rel: str) -> str:
+        """Пути в gta.dat написаны с '\\'; на POSIX-os заменяем, чтобы os.path работал."""
+        if os.sep == "/":
+            return rel.replace("\\", "/")
+        return rel
+
     @classmethod
     def open(cls, root: str) -> "GameBase":
         gb = cls(root=root)
@@ -40,14 +47,20 @@ class GameBase:
                     continue
                 cmd, arg = parts[0].lower(), parts[1].strip().strip('"')
                 if cmd == "model":
-                    p = os.path.normpath(os.path.join(root, "data", arg))
+                    p = os.path.normpath(os.path.join(root, "data", cls._fix_slashes(arg)))
                     ext = p.lower().rsplit(".", 1)[-1]
                     if ext == "ide" and os.path.exists(p):
                         gb.add_ide_file(p)
                     elif ext == "ipl" and os.path.exists(p):
                         gb.ipl_paths_disk.append(p)
                 elif cmd == "image":
-                    p = os.path.normpath(os.path.join(root, arg))
+                    # в gta.dat пути вида models\gamemod.img относительны КОРНЯ игры;
+                    # на случай кастомных сборок — fallback от data\
+                    p = os.path.normpath(os.path.join(root, cls._fix_slashes(arg)))
+                    if not os.path.exists(p):
+                        p2 = os.path.normpath(os.path.join(root, "data", cls._fix_slashes(arg)))
+                        if os.path.exists(p2):
+                            p = p2
                     if os.path.exists(p):
                         gb.add_archive(p)
         # принудительно: gta3.img / gta_int.img (не в gta.dat, но используются)

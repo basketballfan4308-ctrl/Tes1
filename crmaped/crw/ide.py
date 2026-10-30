@@ -57,6 +57,12 @@ def parse_ide(text: str, path: str = "") -> IdeFile:
     ide = IdeFile(path=path)
     # убираем комментарии
     text = re.sub(r"//.*", "", text)
+    # GTA SA IDE бывают в двух вариантах: с фигурными скобками ИЛИ start/end.
+    # Нормализуем start/end -> { } чтобы один парсер покрывал оба.
+    text = re.sub(r"(?im)^\s*(\w+)\s*$", lambda m: m.group(1) + " {"
+        if m.group(1).lower() in ("objs", "tobj", "txdp", "anim", "2dfx", "car_mtg") else m.group(0), text)
+    text = re.sub(r"(?im)^\s*start\s*$", "{", text)
+    text = re.sub(r"(?im)^\s*end\s*$", "}", text)
     # находим секции: имя { ... }
     for m in SEC_RE.finditer(text):
         sec = m.group(1).lower()

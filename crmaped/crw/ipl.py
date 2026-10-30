@@ -98,10 +98,13 @@ def parse_ipl_binary(data: bytes, path: str = "",
     for i in range(n):
         rec = body[i * BNRY_RECORD_SIZE:(i + 1) * BNRY_RECORD_SIZE]
         px, py, pz, qx, qy, qz, qw, mid, interior, lod = struct.unpack("<7fIII", rec)
-        key = str(mid)
+        # пустые/нулевые padding-записи в конце файла — не инстансы
+        if mid == 0 and abs(px) < 1e-6 and abs(py) < 1e-6 and abs(pz) < 1e-6 \
+                and abs(qw) < 1e-6:
+            continue
         name = None
         if id_to_name:
-            name = id_to_name.get(mid)
+            name = id_to_name.get(mid) or id_to_name.get(str(mid))
         if name is None:
             name = f"#{mid}"
         ipl.instances.append(Instance(name, (px, py, pz), (qx, qy, qz, qw),
