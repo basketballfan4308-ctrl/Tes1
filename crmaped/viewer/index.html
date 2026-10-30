@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>CR Map Viewer — диагностика glTF экспорта</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#ddd;font:14px/1.4 system-ui,sans-serif;overflow:hidden}
+  #hud{position:fixed;top:8px;left:8px;z-index:2;background:#000a;padding:8px 12px;border-radius:8px;max-width:560px}
+  #hud b{color:#7fd}
+  #drop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none}
+  #drop span{border:2px dashed #555;border-radius:16px;padding:30px 50px;color:#777;background:#0008}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="hud"><b>CR Map Viewer</b><br>
+  Перетащите .glb сюда (out/lyt_5etagn.glb или out/lytkarino.glb).<br>
+  ЛКМ+drag — вращение камеры, колесо — зум, ПКМ — панорама. <b>L</b> — вкл/выкл инстансов.<br>
+  <span id="info"></span>
+</div>
+<div id="drop"><span>перетащите файл .glb</span></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181c);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 40000);
+
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x30281e, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2.0); sun.position.set(-3000, 4000, -2000); scene.add(sun);
+scene.add(new THREE.GridHelper(8000, 100, 0x228866, 0x223344));
+
+let theta=0.6, phi=1.1, dist=300; const target=new THREE.Vector3(); let drag=null;
+addEventListener('pointerdown', e=>drag={x:e.clientX,y:e.clientY,b:e.button});
+addEventListener('pointerup', ()=>drag=null);
+addEventListener('pointermove', e=>{ if(!drag)return;
+  const dx=e.clientX-drag.x, dy=e.clientY-drag.y; const b=drag.b; drag={x:e.clientX,y:e.clientY,b};
+  if(b===0){theta-=dx*0.005; phi=Math.max(0.05,Math.min(3.09,phi-dy*0.005));}
+  else {const r=new THREE.Vector3(Math.sin(phi)*Math.cos(theta),Math.cos(phi),Math.sin(phi)*Math.sin(theta)).normalize();
+        const right=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),r).normalize();
+        const up=new THREE.Vector3().crossVectors(r,right).normalize();
+        target.addScaledVector(right,-dx*dist*0.0015).addScaledVector(up,dy*dist*0.0015);}
+});
+addEventListener('wheel', e=>dist*=1+Math.sign(e.deltaY)*0.1, {passive:true});
+
+const loaded=[];
+function fitScene(){
+  const box=new THREE.Box3();
+  loaded.forEach(o=>box.expandByObject(o));
+  if(box.isEmpty())return;
+  box.getCenter(target); const s=box.getSize(new THREE.Vector3());
+  dist=Math.max(s.length()*0.9,8);
+  info.textContent += ` | AABB min(${box.min.toArray().map(v=>v.toFixed(1))}) max(${box.max.toArray().map(v=>v.toFixed(1))})`;
+}
+function applyCam(){
+  camera.position.set(target.x+dist*Math.sin(phi)*Math.cos(theta),
+                      target.y+dist*Math.cos(phi),
+                      target.z+dist*Math.sin(phi)*Math.sin(theta));
+  camera.lookAt(target);
+}
+const info=document.getElementById('info');
+
+// корректный читатель аксессоров (типы glTF)
+function readAccessor(json, bin, idx){
+  const a=json.accessors[idx], bv=json.bufferViews[a.bufferView];
+  const comps={SCALAR:1,VEC2:2,VEC3:3,VEC4:4}[a.type];
+  const Ctor={5120:Int8Array,5121:Uint8Array,5122:Int16Array,5123:Uint16Array,5125:Uint32Array,5126:Float32Array}[a.componentType];
+  const bytePer=Ctor.BYTES_PER_ELEMENT;
+  const off=(bv.byteOffset||0)+(a.byteOffset||0);
+  // учитываем possible interleaving через bv.byteStride
+  const stride=bv.byteStride;
+  const n=a.count;
+  if(!stride || stride===comps*bytePer){
+    return new Ctor(bin.buffer, bin.byteOffset+off, n*comps);
+  }
+  const out=new Ctor(n*comps);
+  for(let i=0;i<n;i++)for(let c=0;c<comps;c++)
+    out[i*comps+c]=new Ctor(bin.buffer,bin.byteOffset+off+i*stride+c*bytePer,1)[0];
+  return out;
+}
+
+async function loadBufferedGLB(arrayBuffer){
+  const dv=new DataView(arrayBuffer);
+  if(dv.getUint32(0,true)!==0x46546C67) throw new Error('не GLB');
+  const jsonLen=dv.getUint32(12,true);
+  const json=JSON.parse(new TextDecoder().decode(new Uint8Array(arrayBuffer,20,jsonLen)));
+  const binOff=20+jsonLen+8;
+  const bin=new Uint8Array(arrayBuffer,binOff);
+
+  const loader=new GLTFLoader();
+  const gltf=await loader.parseAsync(arrayBuffer,'');
+  const root=gltf.scene;
+  let nInst=0;
+  for(const node of json.nodes||[]){
+    const ext=node.extensions && node.extensions.EXT_mesh_gpu_instancing;
+    if(!ext) continue;
+    const proto=findByName(root,node.name);
+    if(!proto) continue;
+    const tr=readAccessor(json,bin,ext.attributes.TRANSLATION);
+    const ro=ext.attributes.ROTATION!=null?readAccessor(json,bin,ext.attributes.ROTATION):null;
+    const meshNode=proto.isMesh?proto:[...proto.children].find(c=>c.isMesh)||proto;
+    for(let i=0;i<tr.length/3;i++){
+      const m=new THREE.Mesh(meshNode.geometry,meshNode.material);
+      m.position.set(tr[i*3],tr[i*3+1],tr[i*3+2]);
+      if(ro)m.quaternion.set(ro[i*4],ro[i*4+1],ro[i*4+2],ro[i*4+3]);
+      m.userData.instanced=true;
+      root.add(m); nInst++;
+    }
+    proto.visible=false;
+  }
+  loaded.push(root); scene.add(root);
+  info.textContent=`загружено: ${json.asset?.generator||'glb'}, инстансов развёрнуто: ${nInst}`;
+  fitScene();
+}
+function findByName(root,name){let f=null;root.traverse(o=>{if(o.name===name)f=o;});return f;}
+
+function handleFile(f){
+  f.arrayBuffer().then(loadBufferedGLB).catch(err=>{info.textContent='Ошибка: '+err.message;console.error(err);});
+}
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();document.getElementById('drop').style.display='none';
+  for(const f of e.dataTransfer.files) handleFile(f);});
+addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='l'){
+  loaded.forEach(r=>r.traverse(o=>{ if(o.userData.instanced)o.visible=!o.visible; })); }});
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();});
+(function loop(){requestAnimationFrame(loop);applyCam();renderer.render(scene,camera);})();
+</script>
+</body>
+</html>

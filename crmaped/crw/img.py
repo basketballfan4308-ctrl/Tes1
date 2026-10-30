@@ -57,9 +57,10 @@ class ImgArchive:
                     continue
                 offset = off_sec * SECTOR
                 size = size_sec * SECTOR
-                # VER2 использует флаг 0x80000000 в смещении для расширения >2ГБ
-                if off_sec & 0x80000000:
-                    offset = ((off_sec & ~0x80000000) | 0x80000000) * SECTOR
+                # В SA/VER2 старший бит offset — НЕ флаг расширения: это часть
+                # 32-битного номера сектора (архивы до ~4 ТБ). Маскировать его нельзя,
+                # иначе все записи выше 2 ГБ читались бы мусором. Корректность
+                # проверяем только границами файла ниже.
                 e = ImgEntry(name, offset, size, i)
                 if offset + size > filesize:
                     e = ImgEntry(name, offset, max(0, filesize - offset), i)
